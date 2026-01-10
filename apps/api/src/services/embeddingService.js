@@ -34,7 +34,7 @@ export function computeFlightQueryKey(flight) {
 }
 
 // embedding for a single data row
-export async function generateEmbedding(text, model = "voyager-embedding-001") {
+export async function generateEmbedding(text, model = "voyage-3.5-lite") {
     try {
         const response = await voyageClient.embed({
             input: text,
@@ -61,7 +61,7 @@ export async function refreshData(type, dataArray) {
     );
   
     // embeddings in batch
-    const response = await voyageClient.embed({ input: texts, model: "voyager-embedding-001" });
+    const response = await voyageClient.embed({ input: texts, model: "voyage-3.5-lite" });
   
     const docs = [];
   
