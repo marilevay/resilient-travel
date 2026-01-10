@@ -1,0 +1,13 @@
+# env secrets
+.env
+.env.*
+!.env.example
+
+# Playwright artifacts (if you add later)
+test-results/
+playwright-report/
+playwright/.cache
+
+# Node typical stuff
+node_modules/
+dist/
