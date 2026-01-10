@@ -148,7 +148,10 @@ async function fillCommonFields(page, persona) {
 }
 
 async function runForPersona(browserType, url, persona, opts) {
-  const browser = await browserType.launch({ headless: !!opts.headless });
+  const browser = await browserType.launch({ 
+    headless: !!opts.headless,
+    channel: 'chrome'  // Use system-installed Google Chrome
+  });
   const context = await browser.newContext();
   const page = await context.newPage();
 
