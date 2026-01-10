@@ -14,9 +14,9 @@ async function getCollection() {
 // Voyage setup
 
 const voyageClient = new VoyageAIClient({apiKey: process.env.VOYAGE_API_KEY})
-// TODO Helpers: hashing, generating embeddings, ingest, refresh/append logic
+// Helpers: hashing, generating embeddings, ingest, refresh/append logic
 
-export function computeSemantichash(fieldsArray=[]) {
+export function computeSemanticHash(fieldsArray=[]) {
     const text = fieldsArray.join("|");
     return crypto.createHash("sha256").update(text).digest("hex");
 }
@@ -61,7 +61,7 @@ export async function ingestData(type, dataArray) {
           : `${raw.title} ${raw.description || ""} ${(raw.amenities || []).join(" ")}`
       );
 
-    const response = await client.embed({ input: texts, model: "voyager-embedding-001" });
+    const response = await voyageClient.embed({ input: texts, model: "voyager-embedding-001" });
     
     const docs = dataArray.map((raw, i) => {
         const embedding = response.data[i].embedding;
@@ -81,4 +81,40 @@ export async function ingestData(type, dataArray) {
     return {inserted: docs.length};
 
 }
-// TODO Semantic search
+// Semantic search
+export async function searchData(query, type, filters = {}, topK = 5) {
+    const collection = await getCollection();
+  
+    const queryEmbedding = await generateEmbedding(query);
+  
+    // use Atlas Search $search aggregation with knnBeta
+    const pipeline = [
+      {
+        $search: {
+          knnBeta: {
+            vector: queryEmbedding,
+            path: "embedding",
+            k: topK
+          }
+        }
+      },
+      { $match: { type, isActive: true } } // filter by type
+    ];
+  
+    if (filters.priceMax) pipeline.push({ $match: { $expr: { $lte: ["$price", filters.priceMax] } } });
+    if (filters.city) pipeline.push({ $match: { city: filters.city } });
+  
+    pipeline.push({
+      $project: {
+        _id: 1,
+        title: 1,
+        airline: 1,
+        price: 1,
+        url: 1,
+        score: { $meta: "searchScore" } // similarity score
+      }
+    });
+  
+    const results = await collection.aggregate(pipeline).toArray();
+    return results;
+  }
