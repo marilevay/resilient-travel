@@ -1,0 +1,8 @@
+{
+  "_id": "msg_456",
+  "tripId": "trip_123",
+  "role": "user",
+  "content": "Plan 3 days in Tokyo...",
+  "createdAt": "2026-01-10T22:12:00Z",
+  "meta": { "intent": "FULL_REPLAN" }
+}
