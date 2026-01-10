@@ -1,0 +1,15 @@
+{
+  "_id": "trip_123",
+  "createdAt": "2026-01-10T22:10:00Z",
+  "updatedAt": "2026-01-10T22:30:00Z",
+  "participants": ["user_1", "user_2"],
+  "tripSpec": {
+    "origin": "SFO",
+    "destination": "Tokyo",
+    "dateRange": { "start": "2026-03-10", "end": "2026-03-13" },
+    "budget": { "currency": "USD", "max": 1800 },
+    "preferences": ["ramen", "museums", "walkable"],
+    "constraints": ["refundable_lodging"]
+  },
+  "currentPlanVersion": 2
+}

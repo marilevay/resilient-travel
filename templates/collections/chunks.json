@@ -1,0 +1,16 @@
+{
+  "_id": "chunk_001",
+  "tripId": "trip_123",
+  "sourceId": "src_789",
+  "sourceType": "web",
+  "url": "https://example.com/...",
+  "title": "Example Title",
+  "chunkIndex": 0,
+  "text": "chunk text used for retrieval...",
+  "tags": ["lodging", "refund"],
+  "embedding": [0.0123, -0.0456],
+  "embeddingModel": "voyage-large-2",
+  "sourceHash": "abc123",
+  "isActive": true,
+  "createdAt": "2026-01-10T22:16:00Z"
+}
