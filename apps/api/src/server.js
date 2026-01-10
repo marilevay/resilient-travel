@@ -1,14 +1,25 @@
+import "./env.js";
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
-
-dotenv.config();
+import { ingestSearchResults, vectorSearch } from "./services/embeddingService.js";
+import {
+  fetchFlights,
+  fetchHotels,
+  normalizeFlights,
+  normalizeHotels
+} from "./services/serpService.js";
 
 const app = express();
 const port = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+app.use((req, res, next) => {
+  req.requestId = `req_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  console.log(`[${req.requestId}] ${req.method} ${req.path}`);
+  next();
+});
 
 const inMemory = {
   trips: new Map(),
@@ -70,8 +81,9 @@ function recordMessage(tripId, content, role = "user", meta = {}) {
   return message;
 }
 
-app.post("/api/chat", (req, res) => {
+app.post("/api/chat", async (req, res) => {
   const { tripId = `trip_${Date.now()}`, message, participants = [] } = req.body || {};
+  const budgetMax = req.body?.budgetMax;
 
   if (!message) {
     return res.status(400).json({ error: "message is required" });
@@ -80,15 +92,79 @@ app.post("/api/chat", (req, res) => {
   ensureTrip(tripId, participants);
   recordMessage(tripId, message, "user", { intent: "FULL_REPLAN" });
 
-  // TODO: Replace with Fireworks router + SerpAPI scraping + embeddings + MongoDB.
-  const plan = createPlan(tripId, message);
+  try {
+    console.log(`[${req.requestId}] chat message received`, {
+      tripId,
+      participants: participants.length,
+      budgetMax: budgetMax ?? null
+    });
+    const serpKey = process.env.SERPAPI_API_KEY;
+    let searchResults = [];
 
-  res.json({
-    tripId,
-    planMarkdown: plan.markdown,
-    options: plan.options,
-    evidence: []
-  });
+    if (serpKey) {
+      console.log(`[${req.requestId}] serpapi enabled; fetching flights + hotels`);
+      const flightParams = {
+        apiKey: serpKey,
+        origin: req.body?.origin || "SFO",
+        destination: req.body?.destination || "TYO",
+        outboundDate: req.body?.outboundDate || "2026-03-10",
+        returnDate: req.body?.returnDate || "2026-03-13"
+      };
+      const hotelParams = {
+        apiKey: serpKey,
+        query: req.body?.hotelQuery || "Tokyo hotel",
+        checkInDate: flightParams.outboundDate,
+        checkOutDate: flightParams.returnDate
+      };
+
+      const [flightPayload, hotelPayload] = await Promise.all([
+        fetchFlights(flightParams),
+        fetchHotels(hotelParams)
+      ]);
+
+      searchResults = [
+        ...normalizeFlights(flightPayload),
+        ...normalizeHotels(hotelPayload)
+      ];
+      console.log(`[${req.requestId}] serpapi results normalized`, {
+        flights: searchResults.filter((item) => item.tags?.includes("flight")).length,
+        hotels: searchResults.filter((item) => item.tags?.includes("hotel")).length
+      });
+    } else {
+      // Stub search results; replace with SerpAPI scraping + real sources.
+      console.log(`[${req.requestId}] serpapi disabled; using stubbed results`);
+      searchResults = buildSearchResults(message);
+    }
+
+    await ingestSearchResults(tripId, searchResults);
+    const evidence = await vectorSearch(tripId, message, {
+      limit: req.body?.topK || 8
+    });
+    console.log(`[${req.requestId}] vector search complete`, {
+      topK: evidence.length,
+      budgetMax: budgetMax ?? null
+    });
+    if (budgetMax) {
+      console.log(
+        `[${req.requestId}] budget filter requested; budget-based ranking not implemented yet`
+      );
+    }
+    console.log(`[${req.requestId}] inference route`, {
+      intent: "FULL_REPLAN",
+      model: "fireworks (placeholder)"
+    });
+    const plan = createPlan(tripId, message);
+
+    res.json({
+      tripId,
+      planMarkdown: plan.markdown,
+      options: plan.options,
+      evidence
+    });
+  } catch (error) {
+    console.error(`[${req.requestId}] chat processing failed`, error);
+    res.status(500).json({ error: "failed to process embeddings" });
+  }
 });
 
 app.post("/api/buy", async (req, res) => {
@@ -170,3 +246,26 @@ function merchantPurchase({ optionId, payment }) {
 app.listen(port, () => {
   console.log(`API listening on http://localhost:${port}`);
 });
+
+function buildSearchResults(message) {
+  return [
+    {
+      title: "Failproof Travel sample: budget-friendly flight tips",
+      url: "https://example.com/flights",
+      text: `Tips for keeping flight prices under budget. Query: ${message}`,
+      tags: ["flight", "budget"]
+    },
+    {
+      title: "Failproof Travel sample: refundable lodging checklist",
+      url: "https://example.com/lodging",
+      text: "Checklist for refundable lodging and cancellation policies.",
+      tags: ["lodging", "refund"]
+    },
+    {
+      title: "Failproof Travel sample: day-by-day itinerary buffer",
+      url: "https://example.com/itinerary",
+      text: "How to add Plan B buffers to a 3-day itinerary.",
+      tags: ["itinerary", "buffer"]
+    }
+  ];
+}

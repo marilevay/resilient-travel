@@ -16,6 +16,8 @@
     "x402-fetch": "^1.1.0"
   },
   "devDependencies": {
-    "playwright": "^1.57.0"
+    "playwright": "^1.57.0",
+    "mongodb": "^6.8.0",
+    "voyageai": "^0.1.0"
   }
 }

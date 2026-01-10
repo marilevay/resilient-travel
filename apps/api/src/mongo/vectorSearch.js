@@ -5,6 +5,12 @@ export function buildVectorSearchPipeline({
   numCandidates = 200,
   sourceTypes
 }) {
+  console.log("[vector-search] pipeline", {
+    tripId,
+    limit,
+    numCandidates,
+    sourceTypes: sourceTypes || null
+  });
   const filter = { tripId, isActive: true };
 
   if (Array.isArray(sourceTypes) && sourceTypes.length > 0) {

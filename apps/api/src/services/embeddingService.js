@@ -1,159 +1,117 @@
-import {MongoClient} from "mongodb";
+import "../env.js";
+import { MongoClient } from "mongodb";
 import crypto from "crypto";
-import {VoyageAIClient} from "voyageai";
-// Atlas Setup (getting the scraped data)
-const uri = process.env.MONGODB_URL;
-const client = new MongoClient(uri);
-const dbName = process.env.MONGODB_DB || "MVP";
+import { VoyageAIClient } from "voyageai";
+import { buildVectorSearchPipeline } from "../mongo/vectorSearch.js";
 
-async function getCollection() {
-    if (!client.isConnected?.()) await client.connect();
-    return client.db(dbName).collection("documents");
+const dbName = process.env.MONGODB_DB || "MVP";
+let client;
+
+function getClient() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error("MONGODB_URI is required");
+  }
+  if (!client) {
+    client = new MongoClient(uri);
+  }
+  return client;
 }
 
-// Voyage setup
+const voyageClient = new VoyageAIClient({ apiKey: process.env.VOYAGE_API_KEY });
 
-const voyageClient = new VoyageAIClient({apiKey: process.env.VOYAGE_API_KEY})
-// Helpers: hashing, generating embeddings, ingest, refresh/append logic
+async function getChunksCollection() {
+  const activeClient = getClient();
+  await activeClient.connect();
+  return activeClient.db(dbName).collection("chunks");
+}
 
-export function computeSemanticHash(fieldsArray=[]) {
-    const text = fieldsArray.join("|");
-    return crypto.createHash("sha256").update(text).digest("hex");
+export function computeSemanticHash(fieldsArray = []) {
+  const text = fieldsArray.join("|");
+  return crypto.createHash("sha256").update(text).digest("hex");
 }
 
 export function computeFlightQueryKey(flight) {
-    const keyObj = {
-        origin: flight.origin,
-        destination: flight.destination,
-        departureDate: flight.departureDate,
-        returnDate: flight.returnDate,
-        passengers: flight.passengers || 1,
-        cabinClass: flight.cabinClass || "Economy"
-      };
-      return crypto.createHash("sha256").update(JSON.stringify(keyObj)).digest("hex");
+  const keyObj = {
+    origin: flight.origin,
+    destination: flight.destination,
+    departureDate: flight.departureDate,
+    returnDate: flight.returnDate,
+    passengers: flight.passengers || 1,
+    cabinClass: flight.cabinClass || "Economy"
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(keyObj)).digest("hex");
 }
 
-// embedding for a single data row
 export async function generateEmbedding(text, model = "voyage-3.5-lite") {
-    try {
-        const response = await voyageClient.embed({
-            input: text,
-            model
-        })
+  console.log("[embeddings] generating embedding", { model });
+  const response = await voyageClient.embed({ input: text, model });
 
-        if (!response?.data?.[0].embedding) {
-            throw new Error("Voyage AI did not return an embedding");
-        }
-        return response.data[0].embedding
-    } catch (err) {
-        console.error("Error generating embedding: ", err);
-        throw err;
-    }
+  if (!response?.data?.[0]?.embedding) {
+    throw new Error("Voyage AI did not return an embedding");
+  }
+  console.log("[embeddings] embedding generated");
+  return response.data[0].embedding;
 }
 
-export async function refreshData(type, dataArray) {
-    const collection = await getCollection();
-  
-    const texts = dataArray.map(raw =>
-      type === "flight"
-        ? `${raw.airline} ${raw.price} ${raw.duration} ${raw.stops} stops`
-        : `${raw.title} ${raw.description || ""} ${(raw.amenities || []).join(" ")}`
-    );
-  
-    // embeddings in batch
-    const response = await voyageClient.embed({ input: texts, model: "voyage-3.5-lite" });
-  
-    const docs = [];
-  
-    for (let i = 0; i < dataArray.length; i++) {
-      const raw = dataArray[i];
-      const embedding = response.data[i].embedding;
-  
-      let existingDoc;
-      if (type === "flight") {
-        const key = computeFlightQueryKey(raw);
-        existingDoc = await collection.findOne({ flightQueryKey: key, isActive: true });
-      } else {
-        const hash = computeSemanticHash([raw.title, raw.description || "", ...(raw.amenities || [])]);
-        existingDoc = await collection.findOne({ semanticHash: hash, isActive: true });
-      }
-  
-      if (!existingDoc) {
-        // new data append
-        const doc = {
-          ...raw,
-          type,
-          embedding,
-          isActive: true,
-          lastScraped: new Date().toISOString()
-        };
-        if (type === "flight") doc.flightQueryKey = computeFlightQueryKey(raw);
-        else doc.semanticHash = computeSemanticHash([raw.title, raw.description || "", ...(raw.amenities || [])]);
-        docs.push(doc);
-      } else {
-        // existing but maybe some detail changed
-        const isChanged = type === "flight"
-          ? existingDoc.price !== raw.price || existingDoc.duration !== raw.duration || existingDoc.stops !== raw.stops
-          : existingDoc.description !== raw.description;
-  
-        if (isChanged) {
-          // Soft-delete old
-          await collection.updateOne({ _id: existingDoc._id }, { $set: { isActive: false } });
-  
-          const doc = {
-            ...raw,
-            type,
-            embedding,
-            isActive: true,
-            lastScraped: new Date().toISOString()
-          };
-          if (type === "flight") doc.flightQueryKey = computeFlightQueryKey(raw);
-          else doc.semanticHash = computeSemanticHash([raw.title, raw.description || "", ...(raw.amenities || [])]);
-          docs.push(doc);
-        }
-        // else: same data, so skip
-      }
-    }
-  
-    if (docs.length > 0) await collection.insertMany(docs);
-    return { appendedOrRefreshed: docs.length };
+export async function generateEmbeddings(texts, model = "voyage-3.5-lite") {
+  console.log("[embeddings] generating batch embeddings", { model, count: texts.length });
+  const response = await voyageClient.embed({ input: texts, model });
+  if (!response?.data?.length) {
+    throw new Error("Voyage AI did not return embeddings");
   }
-  
+  console.log("[embeddings] batch embeddings generated", { count: response.data.length });
+  return response.data.map((item) => item.embedding);
+}
 
-// Semantic search
-export async function searchData(query, type, filters = {}, topK = 5) {
-    const collection = await getCollection();
-  
-    const queryEmbedding = await generateEmbedding(query);
-  
-    // use Atlas Search $search aggregation with knnBeta
-    const pipeline = [
-      {
-        $search: {
-          knnBeta: {
-            vector: queryEmbedding,
-            path: "embedding",
-            k: topK
-          }
-        }
-      },
-      { $match: { type, isActive: true } } // filter by type
-    ];
-  
-    if (filters.priceMax) pipeline.push({ $match: { $expr: { $lte: ["$price", filters.priceMax] } } });
-    if (filters.city) pipeline.push({ $match: { city: filters.city } });
-  
-    pipeline.push({
-      $project: {
-        _id: 1,
-        title: 1,
-        airline: 1,
-        price: 1,
-        url: 1,
-        score: { $meta: "searchScore" } // similarity score
-      }
-    });
-  
-    const results = await collection.aggregate(pipeline).toArray();
-    return results;
-  }
+export async function ingestSearchResults(tripId, results, sourceType = "web") {
+  if (!results.length) return { inserted: 0 };
+
+  console.log("[embeddings] ingest search results", { tripId, count: results.length });
+  const collection = await getChunksCollection();
+  const texts = results.map((item) => item.text || item.title || "");
+  const embeddings = await generateEmbeddings(
+    texts,
+    process.env.EMBEDDINGS_MODEL || "voyage-3.5-lite"
+  );
+
+  const docs = results.map((item, index) => ({
+    tripId,
+    sourceId: item.sourceId || `src_${Date.now()}_${index}`,
+    sourceType,
+    url: item.url || "",
+    title: item.title || "Source",
+    chunkIndex: index,
+    text: texts[index],
+    tags: item.tags || [],
+    embedding: embeddings[index],
+    embeddingModel: process.env.EMBEDDINGS_MODEL || "voyage-3.5-lite",
+    sourceHash: computeSemanticHash([texts[index]]),
+    isActive: true,
+    createdAt: new Date().toISOString()
+  }));
+
+  await collection.insertMany(docs);
+  console.log("[embeddings] stored chunks", { tripId, inserted: docs.length });
+  return { inserted: docs.length };
+}
+
+export async function vectorSearch(tripId, query, options = {}) {
+  const collection = await getChunksCollection();
+  console.log("[vector-search] searching", { tripId, limit: options.limit || 8 });
+  const queryVector = await generateEmbedding(
+    query,
+    process.env.EMBEDDINGS_MODEL || "voyage-3.5-lite"
+  );
+  const pipeline = buildVectorSearchPipeline({
+    tripId,
+    queryVector,
+    limit: options.limit || 8,
+    numCandidates: options.numCandidates || 200,
+    sourceTypes: options.sourceTypes
+  });
+
+  const results = await collection.aggregate(pipeline).toArray();
+  console.log("[vector-search] results", { tripId, count: results.length });
+  return results;
+}
