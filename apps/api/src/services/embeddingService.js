@@ -51,20 +51,35 @@ export async function generateEmbedding(text, model = "voyager-embedding-001") {
     }
 }
 
-// Initial embedding for all scraped data
-export async function ingestData(type, dataArray) {
+export async function refreshData(type, dataArray) {
     const collection = await getCollection();
-    
+  
     const texts = dataArray.map(raw =>
-        type === "flight"
-          ? `${raw.airline} ${raw.price} ${raw.duration} ${raw.stops} stops`
-          : `${raw.title} ${raw.description || ""} ${(raw.amenities || []).join(" ")}`
-      );
-
+      type === "flight"
+        ? `${raw.airline} ${raw.price} ${raw.duration} ${raw.stops} stops`
+        : `${raw.title} ${raw.description || ""} ${(raw.amenities || []).join(" ")}`
+    );
+  
+    // embeddings in batch
     const response = await voyageClient.embed({ input: texts, model: "voyager-embedding-001" });
-    
-    const docs = dataArray.map((raw, i) => {
-        const embedding = response.data[i].embedding;
+  
+    const docs = [];
+  
+    for (let i = 0; i < dataArray.length; i++) {
+      const raw = dataArray[i];
+      const embedding = response.data[i].embedding;
+  
+      let existingDoc;
+      if (type === "flight") {
+        const key = computeFlightQueryKey(raw);
+        existingDoc = await collection.findOne({ flightQueryKey: key, isActive: true });
+      } else {
+        const hash = computeSemanticHash([raw.title, raw.description || "", ...(raw.amenities || [])]);
+        existingDoc = await collection.findOne({ semanticHash: hash, isActive: true });
+      }
+  
+      if (!existingDoc) {
+        // new data append
         const doc = {
           ...raw,
           type,
@@ -74,13 +89,37 @@ export async function ingestData(type, dataArray) {
         };
         if (type === "flight") doc.flightQueryKey = computeFlightQueryKey(raw);
         else doc.semanticHash = computeSemanticHash([raw.title, raw.description || "", ...(raw.amenities || [])]);
-        return doc;
-      });
+        docs.push(doc);
+      } else {
+        // existing but maybe some detail changed
+        const isChanged = type === "flight"
+          ? existingDoc.price !== raw.price || existingDoc.duration !== raw.duration || existingDoc.stops !== raw.stops
+          : existingDoc.description !== raw.description;
+  
+        if (isChanged) {
+          // Soft-delete old
+          await collection.updateOne({ _id: existingDoc._id }, { $set: { isActive: false } });
+  
+          const doc = {
+            ...raw,
+            type,
+            embedding,
+            isActive: true,
+            lastScraped: new Date().toISOString()
+          };
+          if (type === "flight") doc.flightQueryKey = computeFlightQueryKey(raw);
+          else doc.semanticHash = computeSemanticHash([raw.title, raw.description || "", ...(raw.amenities || [])]);
+          docs.push(doc);
+        }
+        // else: same data, so skip
+      }
+    }
+  
+    if (docs.length > 0) await collection.insertMany(docs);
+    return { appendedOrRefreshed: docs.length };
+  }
+  
 
-    await collection.insertMany(docs);
-    return {inserted: docs.length};
-
-}
 // Semantic search
 export async function searchData(query, type, filters = {}, topK = 5) {
     const collection = await getCollection();
