@@ -8,12 +8,16 @@ import {
   normalizeFlights,
   normalizeHotels
 } from "./services/serpService.js";
+import flightBookingRoutes from './routes/flightBooking.js';
 
 const app = express();
 const port = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// Flight booking routes (Amadeus + autofill)
+app.use('/api/flights', flightBookingRoutes);
 
 app.use((req, res, next) => {
   req.requestId = `req_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
