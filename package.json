@@ -10,5 +10,8 @@
   "scripts": {
     "dev": "pnpm -r dev",
     "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "playwright": "^1.57.0"
   }
 }

@@ -24,6 +24,13 @@ const path = require('path');
 const os = require('os');
 const { chromium, firefox, webkit } = require('playwright');
 
+const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36';
+
+function randomBetween(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 function parseArgs() {
   const args = {};
   process.argv.slice(2).forEach((arg) => {
@@ -43,6 +50,7 @@ async function tryFill(page, selectors, value) {
         const visible = await locator.isVisible().catch(() => false);
         const disabled = await locator.isDisabled().catch(() => false);
         if (visible && !disabled) {
+          await page.waitForTimeout(randomBetween(80, 180));
           await locator.fill(String(value));
           return true;
         }
@@ -64,13 +72,16 @@ async function trySelect(page, selectors, value) {
         const disabled = await locator.isDisabled().catch(() => false);
         if (visible && !disabled) {
           try {
+            await page.waitForTimeout(randomBetween(80, 180));
             await locator.selectOption({ label: String(value) });
             return true;
           } catch (e) {
             try {
+              await page.waitForTimeout(randomBetween(80, 180));
               await locator.selectOption(String(value));
               return true;
             } catch (e2) {
+              await page.waitForTimeout(randomBetween(80, 180));
               await locator.fill(String(value));
               return true;
             }
@@ -147,13 +158,47 @@ async function fillCommonFields(page, persona) {
   await trySelect(page, ['select[name*="meal"]', 'select[id*="meal"]', 'select[name*="mealPreference"]'], persona.mealPreference || '');
 }
 
-async function runForPersona(browserType, url, persona, opts) {
-  const browser = await browserType.launch({ 
+async function createStealthContext(browserType, opts) {
+  const browser = await browserType.launch({
     headless: !!opts.headless,
-    channel: 'chrome'  // Use system-installed Google Chrome
+    channel: 'chrome',
   });
-  const context = await browser.newContext();
+
+  const context = await browser.newContext({
+    viewport: { width: 1366, height: 768 },
+    userAgent: opts.userAgent || DEFAULT_USER_AGENT,
+    locale: 'en-US',
+    timezoneId: opts.timezoneId || 'America/New_York',
+    geolocation: { latitude: 40.7128, longitude: -74.006 },
+    permissions: ['geolocation'],
+    extraHTTPHeaders: {
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Sec-Ch-Ua-Platform': '"macOS"',
+    },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    window.chrome = window.chrome || { runtime: {} };
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) =>
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters);
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5],
+    });
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+    });
+  });
+
   const page = await context.newPage();
+  return { browser, context, page };
+}
+
+async function runForPersona(browserType, url, persona, opts) {
+  const { browser, context, page } = await createStealthContext(browserType, opts);
 
   console.log(`[${persona.id}] Navigating to ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeout });
@@ -166,26 +211,6 @@ async function runForPersona(browserType, url, persona, opts) {
 
   // try to find a buy/pay/continue button
   const button = page.getByRole('button', { name: /buy|pay|confirm|purchase|continue|next|book/i }).first();
-  const outputsDir = path.join(process.cwd(), 'outputs', persona.id);
-  fs.mkdirSync(outputsDir, { recursive: true });
-
-  // save screenshot and HTML
-  const screenshotPath = path.join(outputsDir, `filled_${Date.now()}.png`);
-  const htmlPath = path.join(outputsDir, `filled_${Date.now()}.html`);
-  try {
-    await page.screenshot({ path: screenshotPath, fullPage: true });
-  } catch (e) {
-    console.warn('screenshot failed', e.message);
-  }
-  try {
-    const html = await page.content();
-    fs.writeFileSync(htmlPath, html, 'utf8');
-  } catch (e) {
-    console.warn('save html failed', e.message);
-  }
-
-  console.log(`[${persona.id}] Saved screenshot -> ${screenshotPath}`);
-  console.log(`[${persona.id}] Saved html -> ${htmlPath}`);
 
   if (await button.count()) {
     const text = (await button.innerText()).trim();
@@ -211,9 +236,16 @@ async function runForPersona(browserType, url, persona, opts) {
   } else {
     console.log(`[${persona.id}] Leaving browser open for review. Close it when done.`);
   }
+
+  return { browser, context, page };
 }
 
-(async function main() {
+async function autofillCheckout({ url, persona, browserName = 'chromium', headless = false, autoclick = false, timeout = 30000, waitBeforeFill = 2000 }) {
+  const browserType = browserName === 'firefox' ? firefox : browserName === 'webkit' ? webkit : chromium;
+  return runForPersona(browserType, url, persona, { headless, autoclick, timeout, waitBeforeFill });
+}
+
+async function main() {
   const args = parseArgs();
   const targetUrl = args.url || args.u;
   if (!targetUrl) {
@@ -258,4 +290,14 @@ async function runForPersona(browserType, url, persona, opts) {
   }
 
   console.log('All done.');
-})();
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  autofillCheckout,
+  runForPersona,
+  fillCommonFields,
+};
